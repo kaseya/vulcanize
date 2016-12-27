@@ -96,7 +96,7 @@ suite('Path Resolver', function() {
       '}',
       'x-quuz {',
       '  background-image: url(\'https://foo.bar/baz.jpg\');',
-      '}',
+      '}'
     ].join('\n');
 
     var expected = [
@@ -108,7 +108,7 @@ suite('Path Resolver', function() {
       '}',
       'x-quuz {',
       '  background-image: url("https://foo.bar/baz.jpg");',
-      '}',
+      '}'
     ].join('\n');
 
     var actual = pathresolver.rewriteURL(inputPath, outputPath, css);
@@ -265,6 +265,29 @@ suite('Path Resolver', function() {
     assert.equal(actual, base, 'templated urls');
   });
 
+  test('Rewrite assetpath in same directory', function() {
+    var html = [
+      '<dom-module id="my-element" assetpath="./">',
+      '<template>',
+      '</template>',
+      '</dom-module>',
+      '<script>Polymer({is: "my-element"})</script>'
+    ].join('\n');
+
+    var expected = [
+      '<html><head></head><body><dom-module id="my-element" assetpath="">',
+      '<template>',
+      '</template>',
+      '</dom-module>',
+      '<script>Polymer({is: "my-element"})</script></body></html>'
+    ].join('\n');
+
+    var ast = parse(html);
+    pathresolver.resolvePaths(ast, inputPath, inputPath);
+
+    var actual = serialize(ast);
+    assert.equal(actual, expected, 'relative');
+  });
 });
 
 suite('Vulcan', function() {
@@ -272,7 +295,6 @@ suite('Vulcan', function() {
   var inputPath = path.resolve('test/html/default.html');
 
   var preds = dom5.predicates;
-  var hyd = require('hydrolysis');
   var doc;
 
   function process(inputPath, cb, vulcanizeOptions) {
@@ -304,12 +326,27 @@ suite('Vulcan', function() {
       });
     });
 
-    test('imports were deduplicated', function() {
+    test('imports were deduplicated', function(done) {
       process(inputPath, function(err, doc) {
         if (err) {
           return done(err);
         }
         assert.equal(dom5.queryAll(doc, preds.hasTagName('dom-module')).length, 1);
+        done();
+      });
+    });
+
+    test('non-import links are left in head', function(done) {
+      var nonImportLinks = preds.AND(
+        preds.hasTagName('link'),
+        preds.NOT(preds.hasAttrValue('rel', 'import'))
+      );
+      process(inputPath, function(err, doc) {
+        if (err) {
+          return done(err);
+        }
+        var head = dom5.query(doc, preds.hasTagName('head'));
+        assert.isAbove(dom5.queryAll(head, nonImportLinks).length, 0);
         done();
       });
     });
@@ -355,7 +392,7 @@ suite('Vulcan', function() {
       });
     });
 
-    test('output file is forced utf-8', function() {
+    test('output file is forced utf-8', function(done) {
       var meta = preds.AND(
         preds.hasTagName('meta'),
         preds.hasAttrValue('charset', 'UTF-8')
@@ -385,7 +422,7 @@ suite('Vulcan', function() {
         var spanHref = dom5.query(doc, span);
         assert.ok(spanHref);
         var anchorRef = dom5.query(doc, a);
-        assert.ok(a);
+        assert.ok(anchorRef);
         done();
       });
     });
@@ -416,51 +453,27 @@ suite('Vulcan', function() {
       });
     });
 
-    test('Imports and scripts are ordered correctly', function(done) {
-      var expectedOrder = [
-        'first-script',
-        'second-import-first-script',
-        'second-import-second-script',
-        'first-import-first-script',
-        'first-import-second-script',
-        'second-script',
-        'third-script'
-      ];
+    test('Scripts are not inlined by default', function(done) {
+      var matchers = require('../lib/matchers');
+      var externalJS = matchers.JS_SRC;
 
-      var expectedSrc = [
-        'order/first-script.js',
-        'order/second-import/first-script.js',
-        'order/second-import/second-script.js',
-        'order/first-import/first-script.js',
-        'order/first-import/second-script.js',
-        'order/second-script.js',
-        'order/third-script.js'
-      ];
-
-      var scriptMatcher = preds.hasTagName('script');
-
-      var callback = function(err, doc) {
+      process('test/html/external.html', function(err, doc) {
         if (err) {
-          return done(err);
+          done(err);
         }
-        var scripts = dom5.queryAll(doc, scriptMatcher);
-        var actualOrder = [], actualSrc = [];
+        var scripts = dom5.queryAll(doc, externalJS);
+        assert.isAbove(scripts.length, 0, 'scripts were inlined');
         scripts.forEach(function(s) {
-          actualOrder.push(dom5.getAttribute(s, 'id'));
-          actualSrc.push(dom5.getAttribute(s, 'src'));
+          assert.equal(dom5.getTextContent(s), '', 'script src should be empty');
         });
-        assert.deepEqual(actualOrder, expectedOrder, 'order is not as expected');
-        assert.deepEqual(actualSrc, expectedSrc, 'srcs are not preserved correctly');
         done();
-      };
-
-      process('test/html/order-test.html', callback);
+      });
     });
 
     test('Old Polymer is detected and warns', function(done) {
       var constants = require('../lib/constants');
       var input = path.resolve('test/html/old-polymer.html');
-      process(input, function(err, doc) {
+      process(input, function(err) {
         if (err) {
           try {
             // check err message
@@ -529,7 +542,81 @@ suite('Vulcan', function() {
     });
   });
 
-  suite('Absolue Paths', function() {
+  suite('Script Ordering', function() {
+    test('Imports and scripts are ordered correctly', function(done) {
+      var expectedOrder = [
+        'first-script',
+        'second-import-first-script',
+        'second-import-second-script',
+        'first-import-first-script',
+        'first-import-second-script',
+        'second-script',
+        'third-script'
+      ];
+
+      var expectedSrc = [
+        'order/first-script.js',
+        'order/second-import/first-script.js',
+        'order/second-import/second-script.js',
+        'order/first-import/first-script.js',
+        'order/first-import/second-script.js',
+        'order/second-script.js',
+        'order/third-script.js'
+      ];
+
+      var scriptMatcher = preds.hasTagName('script');
+
+      var callback = function(err, doc) {
+        if (err) {
+          return done(err);
+        }
+        var scripts = dom5.queryAll(doc, scriptMatcher);
+        var actualOrder = [], actualSrc = [];
+        scripts.forEach(function(s) {
+          actualOrder.push(dom5.getAttribute(s, 'id'));
+          actualSrc.push(dom5.getAttribute(s, 'src'));
+        });
+        assert.deepEqual(actualOrder, expectedOrder, 'order is not as expected');
+        assert.deepEqual(actualSrc, expectedSrc, 'srcs are not preserved correctly');
+        done();
+      };
+
+      process('test/html/order-test.html', callback);
+    });
+
+    test('exhaustive script order testing', function(done) {
+      process('test/html/scriptorder/index.html', function(err, doc) {
+        if (err) {
+          return done(err);
+        }
+        assert(doc);
+        var serialized = dom5.serialize(doc);
+        var beforeLoc = serialized.indexOf("window.BeforeJs");
+        var afterLoc = serialized.indexOf("BeforeJs.value");
+        assert.isBelow(beforeLoc, afterLoc);
+        done();
+      }, {
+        inlineScripts: true
+      });
+    });
+
+    test('Paths are correct when maintaining order', function(done) {
+      process('test/html/recursion/import.html', function(err, doc) {
+        if (err) {
+          return done(err);
+        }
+        assert(doc);
+        var scripts = dom5.queryAll(doc, preds.AND(preds.hasTagName('script'), preds.hasAttr('src')));
+        scripts.forEach(function(s) {
+          var src = dom5.getAttribute(s, 'src');
+          assert.equal(src.indexOf('../order'), 0, 'path should start with ../order');
+        });
+        done();
+      });
+    });
+  });
+
+  suite('Absolute Paths', function() {
     test('Output with Absolute paths with abspath', function(done) {
       var root = path.resolve(inputPath, '../..');
       var target = '/html/default.html';
@@ -615,26 +702,25 @@ suite('Vulcan', function() {
       preds.hasAttrValue('type', 'css')
     );
 
-    // TODO(ajo): Fix test with hydrolysis upgrades.
-    // test('Excluded imports are not when behind a redirected URL.', function(done) {
-    //   var options = {
-    //     excludes: ["test/html/imports/simple-import.html"],
-    //     redirects: ["red://herring/at|test/html/imports"]
-    //   };
+    //TODO(ajo): Fix test with hydrolysis upgrades.
+    test.skip('Excluded imports are not when behind a redirected URL.', function(done) {
+      var options = {
+        excludes: ["test/html/imports/simple-import.html"],
+        redirects: ["red://herring/at|test/html/imports"]
+      };
 
-    //   var callback = function(err, doc) {
-    //     if (err) {
-    //       return done(err);
-    //     }
-    //     var imports = dom5.queryAll(doc, htmlImport);
-    //     assert.equal(imports.length, 2);
-    //     var badCss = dom5.queryAll(doc, cssFromExclude);
-    //     console.log(badCss[0].attrs);
-    //     assert.equal(badCss.length, 0);
-    //     done();
-    //   };
-    //   process(path.resolve('test/html/custom-protocol-excluded.html'), callback, options);
-    // });
+      var callback = function(err, doc) {
+        if (err) {
+          return done(err);
+        }
+        var imports = dom5.queryAll(doc, htmlImport);
+        assert.equal(imports.length, 2);
+        var badCss = dom5.queryAll(doc, cssFromExclude);
+        assert.equal(badCss.length, 0);
+        done();
+      };
+      process(path.resolve('test/html/custom-protocol-excluded.html'), callback, options);
+    });
 
     test('Excluded imports with "Strip Excludes" are removed', function(done) {
       var options = {
@@ -696,9 +782,16 @@ suite('Vulcan', function() {
           return done(err);
         }
         var comments = dom5.nodeWalkAll(doc, dom5.isCommentNode);
-        assert.equal(comments.length, 1);
-        var commentActual = dom5.getTextContent(comments[0]).trim();
-        assert.equal('@license test', commentActual);
+        assert.equal(comments.length, 3);
+        var commentsExpected = [
+          '@license import 2',
+          '@license import 1',
+          '@license main'
+        ];
+        var commentsActual = comments.map(function(c) {
+          return dom5.getTextContent(c).trim();
+        });
+        assert.deepEqual(commentsExpected, commentsActual);
         done();
       };
       process('test/html/comments.html', callback, options);
@@ -713,12 +806,12 @@ suite('Vulcan', function() {
           return done(err);
         }
         var comments = dom5.nodeWalkAll(doc, dom5.isCommentNode);
-        assert.equal(comments.length, 5);
         var expectedComments = [
-          '@license test',
-          'comment in import',
-          '@license test',
-          'comment in import',
+          '@license main',
+          '@license import 1',
+          'comment in import 1',
+          '@license import 2',
+          'comment in import 2',
           'comment in main'
         ];
         var actualComments = comments.map(function(c) {
@@ -741,7 +834,7 @@ suite('Vulcan', function() {
         }
         var links = dom5.queryAll(doc, linkMatcher);
         // one duplicate import is removed
-        assert.equal(links.length, 2);
+        assert.equal(links.length, 3);
         done();
       };
       process('test/html/default.html', callback, options);
@@ -821,6 +914,20 @@ suite('Vulcan', function() {
         done();
       };
       process('test/html/reordered/in.html', callback, options);
+    });
+
+    test('Firebase works inlined', function(done) {
+      var callback = function(err, doc) {
+        if (err) {
+          return done(err);
+        }
+        var scripts = dom5.queryAll(doc, matchers.JS_INLINE);
+        assert.equal(scripts.length, 1);
+        var idx = dom5.getTextContent(scripts[0]).indexOf('</script>');
+        assert(idx === -1, '/script found, should be escaped');
+        done();
+      };
+      process('test/html/firebase.html', callback, options);
     });
   });
 
@@ -920,6 +1027,27 @@ suite('Vulcan', function() {
       };
       process('test/html/inline-styles.html', callback, options);
     });
+
+    test('Inlined styles have original order preserved', function(done) {
+      var callback = function(err, doc) {
+        if (err) {
+          return done(err);
+        }
+        var styles = dom5.queryAll(doc, dom5.predicates.hasTagName('style'));
+        var rules = styles.map(function(s) {
+          return dom5.serialize(s).trim();
+        }).join('\n').match(/\.[a-z-]+/g);
+        assert.deepEqual(rules, [
+          '.from-doc-linked-style',
+          '.from-import-linked-style',
+          '.from-import-inline-style',
+          '.from-style-in-doc-head',
+          '.from-style-in-doc-body'
+        ]);
+        done();
+      };
+      process('test/html/style-order-test-doc.html', callback, options);
+    });
   });
 
   suite('Add import', function(){
@@ -938,6 +1066,7 @@ suite('Vulcan', function() {
     }, options);
     });
   });
+
 
   suite('Input URL', function() {
     var options = {
@@ -970,4 +1099,53 @@ suite('Vulcan', function() {
     });
   });
 
+  suite('Regression Testing', function() {
+    test('Complicated Ordering', function(done) {
+      // refer to https://github.com/Polymer/vulcanize/tree/master/test/html/complicated/ordering.svg
+      // for visual reference on the document structure for this example
+      process('test/html/complicated/A.html', function(err, doc) {
+        if (err) {
+          return done(err);
+        }
+        assert(doc);
+        var expected = [
+          'A1',
+          'C',
+          'E',
+          'B',
+          'D',
+          'A2'
+        ];
+        var scripts = dom5.queryAll(doc, preds.hasTagName('script'));
+        var contents = scripts.map(function(s){
+          return dom5.getTextContent(s).trim();
+        });
+        assert.deepEqual(contents, expected);
+        done();
+      }, {inlineScripts: true});
+    });
+
+    test('Imports in templates should not inline', function(done) {
+      process('test/html/inside-template.html', function(err, doc) {
+        var importMatcher = preds.AND(
+          preds.hasTagName('link'),
+          preds.hasAttrValue('rel', 'import'),
+          preds.hasAttr('href')
+        );
+        var externalScriptMatcher = preds.AND(
+          preds.hasTagName('script'),
+          preds.hasAttrValue('src', 'external/external.js')
+        );
+        if (err) {
+          return done(err);
+        }
+        assert(doc);
+        var imports = dom5.queryAll(doc, importMatcher);
+        assert.equal(imports.length, 1, 'import in template was inlined');
+        var unexpectedScript = dom5.query(doc, externalScriptMatcher);
+        assert.equal(unexpectedScript, null, 'script in external.html should not be present');
+        done();
+      });
+    });
+  });
 });

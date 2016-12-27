@@ -1,6 +1,6 @@
 {
   "name": "vulcanize",
-  "version": "1.14.5",
+  "version": "1.15.2",
   "description": "Process Web Components into one output file",
   "main": "lib/vulcan.js",
   "bin": {
@@ -15,11 +15,12 @@
   },
   "devDependencies": {
     "chai": "^3.4.1",
-    "jshint": "^2.7.0",
+    "eslint": "^2.8.0",
+    "firebase": "^2.4.1",
     "mocha": "^2.2.4"
   },
   "scripts": {
-    "test": "jshint --verbose lib bin/vulcanize test && mocha"
+    "test": "eslint lib bin test && mocha"
   },
   "author": "The Polymer Project Authors",
   "license": "BSD-3-Clause",
@@ -36,8 +37,5 @@
   },
   "bugs": {
     "url": "https://github.com/Polymer/vulcanize/issues"
-  },
-  "optionalDependencies": {
-    "update-notifier": "^0.6.0"
   }
 }
